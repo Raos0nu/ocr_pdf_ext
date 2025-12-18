@@ -7,6 +7,7 @@ import pytesseract
 if os.name == "nt":  # Windows
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 # On Linux/Vercel, Tesseract should be in PATH, so we don't set it explicitly
+# If Tesseract is not found, pytesseract will raise TesseractNotFoundError
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -22,7 +23,14 @@ def ocr_page(page, dpi: int = 200) -> str:
     pix = page.get_pixmap(matrix=mat, alpha=False)
 
     image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    text = pytesseract.image_to_string(image)
+    try:
+        text = pytesseract.image_to_string(image)
+    except pytesseract.TesseractNotFoundError:
+        raise RuntimeError(
+            "Tesseract OCR is not installed or not found in PATH. "
+            "Please install Tesseract OCR on your system. "
+            "On Linux: sudo apt-get install tesseract-ocr"
+        )
     return text
 
 

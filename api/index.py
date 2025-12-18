@@ -1,13 +1,22 @@
 from pathlib import Path
 import tempfile
 import os
+import traceback
 
 from flask import Flask, render_template_string, request
 
-# Import OCR function
+# Import OCR function with error handling
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from ocr_pdf_extract import ocr_pdf
+
+try:
+    from ocr_pdf_extract import ocr_pdf
+    OCR_AVAILABLE = True
+except Exception as e:  # noqa: BLE001
+    OCR_AVAILABLE = False
+    OCR_ERROR = str(e)
+    print(f"Warning: OCR module failed to import: {e}")
+    print(traceback.format_exc())
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -57,23 +66,35 @@ def index():
     error = ""
     text = ""
 
+    # Check if OCR is available
+    if not OCR_AVAILABLE:
+        error = f"OCR module not available. Error: {OCR_ERROR}. This usually means Tesseract OCR is not installed on the server."
+        return render_template_string(INDEX_HTML, error=error, text=text)
+
     if request.method == "POST":
         uploaded = request.files.get("file")
         if not uploaded or uploaded.filename == "":
             error = "Please choose a PDF file to upload."
         else:
             # Use /tmp directory for Vercel (writable in serverless environment)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir="/tmp") as tmp:
-                try:
-                    uploaded.save(tmp.name)
-                    text = ocr_pdf(Path(tmp.name))
-                    # Clean up temp file
-                    os.unlink(tmp.name)
-                except Exception as exc:  # noqa: BLE001
-                    error = f"Failed to process PDF: {exc}"
-                    # Try to clean up on error too
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir="/tmp") as tmp:
+                    tmp_path = tmp.name
+                    uploaded.save(tmp_path)
+                
+                # Process PDF
+                text = ocr_pdf(Path(tmp_path))
+                
+            except Exception as exc:  # noqa: BLE001
+                error = f"Failed to process PDF: {exc}"
+                # Include traceback for debugging
+                error += f"\n\nTraceback:\n{traceback.format_exc()}"
+            finally:
+                # Clean up temp file
+                if tmp_path and os.path.exists(tmp_path):
                     try:
-                        os.unlink(tmp.name)
+                        os.unlink(tmp_path)
                     except:  # noqa: BLE001, S110
                         pass
 
