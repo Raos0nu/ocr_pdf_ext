@@ -2,21 +2,45 @@ import argparse                     # AUTHOR (@raos0nu)(https://github.com/Raos0
 import os
 from pathlib import Path
 
-import pytesseract
-# Set Tesseract path based on environment (Windows vs Linux/Vercel)
-if os.name == "nt":  # Windows
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-# On Linux/Vercel, Tesseract should be in PATH, so we don't set it explicitly
-# If Tesseract is not found, pytesseract will raise TesseractNotFoundError
+# Import dependencies with error handling
+try:
+    import pytesseract
+    # Set Tesseract path based on environment (Windows vs Linux/Vercel)
+    if os.name == "nt":  # Windows
+        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    # On Linux/Vercel, Tesseract should be in PATH, so we don't set it explicitly
+    # If Tesseract is not found, pytesseract will raise TesseractNotFoundError
+    PYTESSERACT_AVAILABLE = True
+except ImportError:
+    PYTESSERACT_AVAILABLE = False
+    pytesseract = None  # type: ignore
 
-import fitz  # PyMuPDF
-from PIL import Image
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    fitz = None  # type: ignore
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = None  # type: ignore
 
 
 def ocr_page(page, dpi: int = 200) -> str:
     """
     Render a single PDF page to an image and run OCR on it.
     """
+    if not PYMUPDF_AVAILABLE:
+        raise RuntimeError("PyMuPDF (fitz) is not available. Please install it: pip install PyMuPDF")
+    if not PIL_AVAILABLE:
+        raise RuntimeError("Pillow (PIL) is not available. Please install it: pip install Pillow")
+    if not PYTESSERACT_AVAILABLE:
+        raise RuntimeError("pytesseract is not available. Please install it: pip install pytesseract")
+    
     # PyMuPDF uses a matrix to control resolution; 72 dpi is 1.0
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
@@ -25,12 +49,14 @@ def ocr_page(page, dpi: int = 200) -> str:
     image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     try:
         text = pytesseract.image_to_string(image)
-    except pytesseract.TesseractNotFoundError:
+    except pytesseract.TesseractNotFoundError:  # type: ignore
         raise RuntimeError(
             "Tesseract OCR is not installed or not found in PATH. "
             "Please install Tesseract OCR on your system. "
             "On Linux: sudo apt-get install tesseract-ocr"
         )
+    except Exception as e:
+        raise RuntimeError(f"OCR failed: {e}")
     return text
 
 
@@ -38,16 +64,21 @@ def ocr_pdf(input_path: Path, dpi: int = 200) -> str:
     """
     Run OCR over all pages in a PDF and return the concatenated text.
     """
+    if not PYMUPDF_AVAILABLE:
+        raise RuntimeError("PyMuPDF (fitz) is not available. Please install it: pip install PyMuPDF")
+    
     doc = fitz.open(input_path)
     texts = []
 
-    for page_index in range(len(doc)):
-        page = doc.load_page(page_index)
-        page_text = ocr_page(page, dpi=dpi)
-        header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
-        texts.append(header + page_text)
-
-    doc.close()
+    try:
+        for page_index in range(len(doc)):
+            page = doc.load_page(page_index)
+            page_text = ocr_page(page, dpi=dpi)
+            header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
+            texts.append(header + page_text)
+    finally:
+        doc.close()
+    
     return "".join(texts)
 
 

@@ -9,12 +9,18 @@ from flask import Flask, render_template_string, request
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+OCR_AVAILABLE = False
+OCR_ERROR = "Not initialized"
+
 try:
     from ocr_pdf_extract import ocr_pdf
     OCR_AVAILABLE = True
+    OCR_ERROR = None
+except ImportError as e:
+    OCR_ERROR = f"Import error: {e}. Missing dependencies?"
+    print(f"Warning: OCR module failed to import: {e}")
 except Exception as e:  # noqa: BLE001
-    OCR_AVAILABLE = False
-    OCR_ERROR = str(e)
+    OCR_ERROR = f"Error: {e}"
     print(f"Warning: OCR module failed to import: {e}")
     print(traceback.format_exc())
 
@@ -68,8 +74,12 @@ def index():
 
     # Check if OCR is available
     if not OCR_AVAILABLE:
-        error = f"OCR module not available. Error: {OCR_ERROR}. This usually means Tesseract OCR is not installed on the server."
-        return render_template_string(INDEX_HTML, error=error, text=text)
+        error_msg = f"OCR functionality is not available. {OCR_ERROR}"
+        error_msg += "\n\nThis usually means:"
+        error_msg += "\n1. Tesseract OCR is not installed on the server (Vercel doesn't include it by default)"
+        error_msg += "\n2. Or required Python packages are missing"
+        error_msg += "\n\nFor Vercel deployment, consider using a cloud OCR API service instead."
+        return render_template_string(INDEX_HTML, error=error_msg, text=text)
 
     if request.method == "POST":
         uploaded = request.files.get("file")
