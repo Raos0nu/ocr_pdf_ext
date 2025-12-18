@@ -1,4 +1,5 @@
 from pathlib import Path                  # AUTHOR (@raos0nu)(https://github.com/Raos0nu)
+import os
 
 from flask import Flask, render_template_string, request
 
@@ -56,9 +57,14 @@ def index():
         if not uploaded or uploaded.filename == "":
             error = "Please choose a PDF file to upload."
         else:
-            # Save to a local 'uploads' folder to avoid Windows temp-file permission issues
-            uploads_dir = Path("uploads")
-            uploads_dir.mkdir(exist_ok=True)
+            # On Vercel, the filesystem is read-only except for /tmp, so we use it there.
+            # Locally, we keep using a relative 'uploads' folder for convenience.
+            if os.environ.get("VERCEL_ENV"):
+                uploads_dir = Path("/tmp/uploads")
+            else:
+                uploads_dir = Path("uploads")
+
+            uploads_dir.mkdir(parents=True, exist_ok=True)
 
             safe_name = Path(uploaded.filename).name or "uploaded.pdf"
             save_path = uploads_dir / safe_name
