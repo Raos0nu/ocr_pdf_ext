@@ -1,8 +1,9 @@
 uploads/
 *.pdf
-*.txt
+*_ocr.txt
 __pycache__/
 *.pyc
 .venv/
 venv/
+# Note: requirements.txt is NOT ignored - Vercel needs it!
 

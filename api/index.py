@@ -81,7 +81,6 @@ def index():
 
 
 # Vercel Python runtime handler
-# Export the Flask app as the handler
-# Vercel's @vercel/python will automatically wrap this as a serverless function
-handler = app
+# Vercel automatically detects Flask apps in api/ directory
+# The app variable is the WSGI application that Vercel will use
 
