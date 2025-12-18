@@ -93,8 +93,8 @@ def index():
                     tmp_path = tmp.name
                     uploaded.save(tmp_path)
                 
-                # Process PDF
-                text = ocr_pdf(Path(tmp_path))
+                # Process PDF (will use direct text extraction if OCR not available)
+                text = ocr_pdf(Path(tmp_path), fallback_to_direct_extraction=True)
                 
             except Exception as exc:  # noqa: BLE001
                 error = f"Failed to process PDF: {exc}"

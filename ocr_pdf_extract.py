@@ -60,12 +60,49 @@ def ocr_page(page, dpi: int = 200) -> str:
     return text
 
 
-def ocr_pdf(input_path: Path, dpi: int = 200) -> str:
+def extract_text_from_pdf(input_path: Path) -> str:
     """
-    Run OCR over all pages in a PDF and return the concatenated text.
+    Extract text directly from PDF (if it has text layers).
+    This works without OCR and is much faster.
     """
     if not PYMUPDF_AVAILABLE:
         raise RuntimeError("PyMuPDF (fitz) is not available. Please install it: pip install PyMuPDF")
+    
+    doc = fitz.open(input_path)
+    texts = []
+    
+    try:
+        for page_index in range(len(doc)):
+            page = doc.load_page(page_index)
+            # Try to extract text directly (works for PDFs with text layers)
+            page_text = page.get_text()
+            if page_text.strip():  # If we got text, use it
+                header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
+                texts.append(header + page_text)
+    finally:
+        doc.close()
+    
+    return "".join(texts)
+
+
+def ocr_pdf(input_path: Path, dpi: int = 200, fallback_to_direct_extraction: bool = True) -> str:
+    """
+    Run OCR over all pages in a PDF and return the concatenated text.
+    If OCR is not available and fallback_to_direct_extraction is True,
+    tries to extract text directly from PDF (works for PDFs with text layers).
+    """
+    if not PYMUPDF_AVAILABLE:
+        raise RuntimeError("PyMuPDF (fitz) is not available. Please install it: pip install PyMuPDF")
+    
+    # If OCR dependencies are not available, try direct text extraction
+    if not (PYTESSERACT_AVAILABLE and PIL_AVAILABLE):
+        if fallback_to_direct_extraction:
+            return extract_text_from_pdf(input_path)
+        else:
+            raise RuntimeError(
+                "OCR dependencies not available. Install pytesseract and Pillow, "
+                "or use fallback_to_direct_extraction=True to extract text directly from PDF."
+            )
     
     doc = fitz.open(input_path)
     texts = []
@@ -73,9 +110,17 @@ def ocr_pdf(input_path: Path, dpi: int = 200) -> str:
     try:
         for page_index in range(len(doc)):
             page = doc.load_page(page_index)
-            page_text = ocr_page(page, dpi=dpi)
-            header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
-            texts.append(header + page_text)
+            # Try direct text extraction first (faster, works for text-based PDFs)
+            direct_text = page.get_text()
+            if direct_text.strip():
+                # PDF has text layer, use it directly
+                header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
+                texts.append(header + direct_text)
+            else:
+                # No text layer, use OCR
+                page_text = ocr_page(page, dpi=dpi)
+                header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
+                texts.append(header + page_text)
     finally:
         doc.close()
     
