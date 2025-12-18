@@ -1,0 +1,8 @@
+uploads/
+*.pdf
+*.txt
+__pycache__/
+*.pyc
+.venv/
+venv/
+
