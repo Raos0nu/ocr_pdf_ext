@@ -48,7 +48,7 @@ def normalize_date(date_str: str) -> str:
         # DD/MM/YYYY formats
         (r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", lambda m: f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"),
         # DD/MM/YY formats
-        (r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2})\b", lambda m: f"20{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}" if int(m.group(3)) < 50 else f"19{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"),
+        (r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2})\b", lambda m: (f"20{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}" if (m.group(3) and m.group(3).strip() and int(m.group(3)) < 50) else f"19{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}") if (m.group(3) and m.group(3).strip()) else ""),
         # YYYY/MM/DD formats
         (r"(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})", lambda m: f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"),
         # DD Month YYYY
@@ -56,7 +56,7 @@ def normalize_date(date_str: str) -> str:
          lambda m: datetime.strptime(f"{m.group(1)} {m.group(2)[:3]} {m.group(3)}", "%d %b %Y").strftime("%Y-%m-%d")),
         # DD Month YY
         (r"(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{2})\b",
-         lambda m: datetime.strptime(f"{m.group(1)} {m.group(2)[:3]} {('20' if int(m.group(3)) < 50 else '19') + m.group(3)}", "%d %b %Y").strftime("%Y-%m-%d")),
+         lambda m: datetime.strptime(f"{m.group(1)} {m.group(2)[:3]} {('20' if (m.group(3) and m.group(3).strip() and int(m.group(3)) < 50) else '19') + m.group(3)}", "%d %b %Y").strftime("%Y-%m-%d") if (m.group(3) and m.group(3).strip()) else ""),
     ]
     
     for pattern, formatter in patterns:
@@ -101,10 +101,21 @@ def extract_number(text: str, allow_decimal: bool = True) -> str:
     if matches:
         # Take the largest number (usually the main value)
         numbers = [m.replace(',', '') for m in matches]
+        # Filter out empty strings and invalid numbers
+        numbers = [n for n in numbers if n and n.strip()]
         # Return the one that looks most like a currency amount
-        for num in sorted(numbers, key=lambda x: float(x) if '.' in x else int(x), reverse=True):
-            if float(num) > 0:
-                return num
+        def sort_key(x):
+            try:
+                return float(x) if '.' in x else int(x)
+            except (ValueError, TypeError):
+                return 0
+        
+        for num in sorted(numbers, key=sort_key, reverse=True):
+            try:
+                if float(num) > 0:
+                    return num
+            except (ValueError, TypeError):
+                continue
     
     return ""
 
@@ -443,16 +454,27 @@ def extract_insurance_fields(text: str) -> Dict[str, str]:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             year = match.group(1)
-            if 1990 <= int(year) <= 2030:
-                result["YEAR_OF_MANUFACTURE"] = year
-                break
+            if year and year.strip():
+                try:
+                    if 1990 <= int(year) <= 2030:
+                        result["YEAR_OF_MANUFACTURE"] = year
+                        break
+                except (ValueError, TypeError):
+                    continue
     
     if not result["YEAR_OF_MANUFACTURE"]:
         # Look for 4-digit years in reasonable range
         year_matches = re.findall(r'\b(19[9]\d|20[0-2]\d)\b', text)
         if year_matches:
             # Prefer years near current date, but take any reasonable year
-            valid_years = [y for y in year_matches if 1990 <= int(y) <= 2030]
+            valid_years = []
+            for y in year_matches:
+                if y and y.strip():
+                    try:
+                        if 1990 <= int(y) <= 2030:
+                            valid_years.append(y)
+                    except (ValueError, TypeError):
+                        continue
             if valid_years:
                 result["YEAR_OF_MANUFACTURE"] = max(valid_years)
     
