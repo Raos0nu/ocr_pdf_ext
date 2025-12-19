@@ -1,5 +1,6 @@
 import argparse                     # AUTHOR (@raos0nu)(https://github.com/Raos0nu)
 import os
+import re
 from pathlib import Path
 
 # Import dependencies with error handling
@@ -85,9 +86,10 @@ def extract_text_from_pdf(input_path: Path) -> str:
     return "".join(texts)
 
 
-def ocr_pdf(input_path: Path, dpi: int = 200, fallback_to_direct_extraction: bool = True) -> str:
+def ocr_pdf(input_path: Path, dpi: int = 300, fallback_to_direct_extraction: bool = True) -> str:
     """
     Run OCR over all pages in a PDF and return the concatenated text.
+    Enhanced version with better text extraction and OCR quality.
     If OCR is not available and fallback_to_direct_extraction is True,
     tries to extract text directly from PDF (works for PDFs with text layers).
     """
@@ -112,19 +114,37 @@ def ocr_pdf(input_path: Path, dpi: int = 200, fallback_to_direct_extraction: boo
             page = doc.load_page(page_index)
             # Try direct text extraction first (faster, works for text-based PDFs)
             direct_text = page.get_text()
-            if direct_text.strip():
+            
+            # Also try text extraction with layout preservation
+            direct_text_layout = page.get_text("text")
+            
+            # Use the longer/more complete text
+            if len(direct_text_layout) > len(direct_text):
+                direct_text = direct_text_layout
+            
+            if direct_text.strip() and len(direct_text.strip()) > 50:
                 # PDF has text layer, use it directly
-                header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
-                texts.append(header + direct_text)
+                # Clean up the text
+                direct_text = re.sub(r'\s+', ' ', direct_text)  # Normalize whitespace
+                texts.append(direct_text + "\n")
             else:
-                # No text layer, use OCR
-                page_text = ocr_page(page, dpi=dpi)
-                header = f"\n\n===== PAGE {page_index + 1} =====\n\n"
-                texts.append(header + page_text)
+                # No text layer or insufficient text, use OCR
+                # Try higher DPI for better accuracy
+                page_text = ocr_page(page, dpi=max(dpi, 300))
+                if page_text.strip():
+                    # Clean OCR output
+                    page_text = re.sub(r'\s+', ' ', page_text)  # Normalize whitespace
+                    texts.append(page_text + "\n")
     finally:
         doc.close()
     
-    return "".join(texts)
+    # Combine all pages and clean up
+    full_text = " ".join(texts)
+    # Remove excessive newlines and spaces
+    full_text = re.sub(r'\n\s*\n', '\n', full_text)
+    full_text = re.sub(r' {2,}', ' ', full_text)
+    
+    return full_text
 
 
 def main():
