@@ -151,16 +151,16 @@ def find_field_by_keywords(text: str, keywords: List[str], multiline: bool = Fal
     for keyword in expanded_keywords:
         keyword_upper = keyword.upper()
         
-        # Multiple patterns to try
+        # Multiple patterns to try - more restrictive to avoid capturing too much
         patterns = [
-            # Pattern 1: "Keyword:" or "Keyword -" or "Keyword="
-            rf"{re.escape(keyword_upper)}\s*[:=\-]\s*(.+?)(?:\n|$)",
-            # Pattern 2: "Keyword " (space)
-            rf"{re.escape(keyword_upper)}\s+(.+?)(?:\n|$)",
+            # Pattern 1: "Keyword:" or "Keyword -" or "Keyword=" - stop at next field or newline
+            rf"{re.escape(keyword_upper)}\s*[:=\-]\s*([^\n:=\-]{1,200}?)(?:\s*(?:\n|$|[:=\-]\s*[A-Z])|$)",
+            # Pattern 2: "Keyword " (space) - stop at next field indicator
+            rf"{re.escape(keyword_upper)}\s+([^\n:=\-]{1,200}?)(?:\s*(?:\n|$|[:=\-]\s*[A-Z])|$)",
             # Pattern 3: "Keyword" at start of line
-            rf"^{re.escape(keyword_upper)}\s*[:=\-]?\s*(.+?)(?:\n|$)",
+            rf"^{re.escape(keyword_upper)}\s*[:=\-]?\s*([^\n:=\-]{1,200}?)(?:\s*(?:\n|$|[:=\-]\s*[A-Z])|$)",
             # Pattern 4: Flexible spacing
-            rf"{re.escape(keyword_upper.replace(' ', r'\s+'))}\s*[:=\-]?\s*(.+?)(?:\n|$)",
+            rf"{re.escape(keyword_upper.replace(' ', r'\s+'))}\s*[:=\-]?\s*([^\n:=\-]{1,200}?)(?:\s*(?:\n|$|[:=\-]\s*[A-Z])|$)",
         ]
         
         for pattern in patterns:
@@ -172,25 +172,47 @@ def find_field_by_keywords(text: str, keywords: List[str], multiline: bool = Fal
                 if len(value) < 2 or re.match(r'^[A-Z\s]+[:=\-]', value):
                     continue
                 
-                # If multiline, collect continuation lines
+                # If multiline, collect continuation lines with stricter stopping
                 if multiline:
                     match_line_idx = text_upper[:match.end()].count('\n')
                     collected = [value]
                     
+                    # Common field keywords that should stop collection
+                    stop_keywords = [
+                        r'^(Policy|Vehicle|Premium|Customer|Address|Nominee|Registration|Engine|Chassis|Make|Model|Year|Fuel|IDV|NCB|GST|CGST|SGST|IGST|OD|TP|Total|Net|Broker|Financier|Intermediary|City|State|Pincode|Mobile|Email|Name|Date|Cover|CC|GVW)',
+                        r'^[A-Z\s]{3,}[:=\-]',  # Field labels
+                        r'^\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}',  # Dates
+                        r'^[A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,2}\s?[0-9]{4}',  # Registration numbers
+                    ]
+                    
                     for i in range(match_line_idx + 1, min(match_line_idx + 1 + max_lines, len(text_lines))):
                         next_line = text_lines[i].strip()
                         if not next_line:
-                            break
-                        # Stop if next line looks like a new field
-                        if re.match(r'^[A-Z\s]{3,}[:=\-]', next_line, re.IGNORECASE):
-                            break
-                        # Stop if we hit common section headers
-                        if re.match(r'^(Policy|Vehicle|Premium|Customer|Address|Nominee)', next_line, re.IGNORECASE):
-                            if i > match_line_idx + 2:  # Allow 1-2 lines after keyword
+                            # Stop after 2 consecutive empty lines
+                            if i < len(text_lines) - 1 and not text_lines[i + 1].strip():
                                 break
+                            continue
+                        
+                        # Stop if next line looks like a new field
+                        should_stop = False
+                        for stop_pattern in stop_keywords:
+                            if re.match(stop_pattern, next_line, re.IGNORECASE):
+                                should_stop = True
+                                break
+                        
+                        if should_stop:
+                            break
+                        
+                        # Stop if line is too long (likely not part of address)
+                        if len(next_line) > 150:
+                            break
+                            
                         collected.append(next_line)
                     
                     value = ' '.join(collected).strip()
+                    # Limit total length for safety
+                    if len(value) > 500:
+                        value = value[:500].rsplit(' ', 1)[0]  # Cut at last word boundary
                 
                 # Apply value pattern if provided
                 if value_pattern:
@@ -516,14 +538,43 @@ def extract_insurance_fields(text: str) -> Dict[str, str]:
     )
     result["OD_EXPIRE_DATE"] = normalize_date(od_expire)
     
-    # Complete Location Address - Enhanced multiline
-    result["COMPLETE_LOCATION_ADDRESS"] = find_field_by_keywords(
-        text,
-        ["Address", "Complete Address", "Location", "Residential Address", 
-         "Permanent Address", "Correspondence Address", "Registered Address", "Full Address"],
-        multiline=True,
-        max_lines=8
-    )
+    # Complete Location Address - Enhanced multiline with stricter limits
+    address_patterns = [
+        r"(?:COMPLETE\s+)?(?:LOCATION\s+)?ADDRESS\s*[:=\-]?\s*([^\n]{10,200}?)(?:\s*(?:\n|CITY|STATE|PIN|MOBILE|EMAIL|PHONE|CONTACT|$))",
+        r"ADDRESS\s*[:=\-]?\s*([^\n]{10,200}?)(?:\s*(?:\n|CITY|STATE|PIN|MOBILE|EMAIL|PHONE|CONTACT|$))",
+    ]
+    for pattern in address_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            address = match.group(1).strip()
+            # Try to get a few more lines if it looks like an address
+            match_pos = match.end()
+            lines = text[match_pos:match_pos+300].split('\n')[:4]  # Max 4 more lines
+            collected = [address]
+            for line in lines:
+                line = line.strip()
+                if not line or len(line) < 5:
+                    break
+                # Stop if it looks like another field
+                if re.match(r'^(CITY|STATE|PIN|MOBILE|EMAIL|PHONE|CONTACT|NAME|POLICY|VEHICLE|PREMIUM)', line, re.IGNORECASE):
+                    break
+                # Stop if line is too long (likely not address)
+                if len(line) > 100:
+                    break
+                collected.append(line)
+            result["COMPLETE_LOCATION_ADDRESS"] = ' '.join(collected).strip()
+            # Limit total length
+            if len(result["COMPLETE_LOCATION_ADDRESS"]) > 300:
+                result["COMPLETE_LOCATION_ADDRESS"] = result["COMPLETE_LOCATION_ADDRESS"][:300].rsplit(' ', 1)[0]
+            break
+    
+    if not result["COMPLETE_LOCATION_ADDRESS"]:
+        result["COMPLETE_LOCATION_ADDRESS"] = find_field_by_keywords(
+            text,
+            ["Complete Address", "Residential Address", "Permanent Address", "Correspondence Address"],
+            multiline=True,
+            max_lines=4  # Reduced from 8
+        )
     
     # City Name - Enhanced
     result["CITY_NAME"] = find_field_by_keywords(
@@ -582,12 +633,40 @@ def extract_insurance_fields(text: str) -> Dict[str, str]:
         ["Cover", "Coverage", "Cover Type", "Type of Cover", "Policy Cover"]
     )
     
-    # IDV / Sum Insured - Enhanced
-    idv_text = find_field_by_keywords(
-        text,
-        ["IDV", "Sum Insured", "Insured Value", "IDV Amount", "Sum Assured", "Insured Sum"]
-    )
-    result["IDV_SUM_INSURED"] = extract_number(idv_text)
+    # IDV / Sum Insured - Enhanced with validation
+    idv_patterns = [
+        r"(?:TOTAL\s+)?IDV\s*[:=\-]?\s*(\d{4,8}(?:\.\d{2})?)",
+        r"SUM\s+INSURED\s*[:=\-]?\s*(\d{4,8}(?:\.\d{2})?)",
+        r"INSURED\s+VALUE\s*[:=\-]?\s*(\d{4,8}(?:\.\d{2})?)",
+    ]
+    for pattern in idv_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            idv_val = match.group(1).strip()
+            try:
+                idv_num = float(idv_val.replace(',', ''))
+                # Validate reasonable IDV range (10,000 to 50,000,000)
+                if 10000 <= idv_num <= 50000000:
+                    result["IDV_SUM_INSURED"] = idv_val.replace(',', '')
+                    break
+            except (ValueError, TypeError):
+                continue
+    
+    if not result["IDV_SUM_INSURED"]:
+        idv_text = find_field_by_keywords(
+            text,
+            ["IDV", "Sum Insured", "Insured Value", "IDV Amount", "Sum Assured", "Insured Sum"],
+            value_pattern=r"[\d,]+(?:\.\d{2})?"
+        )
+        result["IDV_SUM_INSURED"] = extract_number(idv_text)
+        # Validate the extracted number
+        if result["IDV_SUM_INSURED"]:
+            try:
+                idv_num = float(result["IDV_SUM_INSURED"].replace(',', ''))
+                if not (10000 <= idv_num <= 50000000):
+                    result["IDV_SUM_INSURED"] = ""  # Invalid range
+            except (ValueError, TypeError):
+                result["IDV_SUM_INSURED"] = ""
     
     # NCB (No Claim Bonus) - Enhanced
     ncb_text = find_field_by_keywords(
@@ -653,19 +732,74 @@ def extract_insurance_fields(text: str) -> Dict[str, str]:
     )
     result["IGST"] = extract_number(igst_text)
     
-    # CC (Cubic Capacity) - Enhanced
-    cc_text = find_field_by_keywords(
-        text,
-        ["CC", "Cubic Capacity", "Engine CC", "CC:", "Cubic Capacity (CC)"]
-    )
-    result["CC"] = extract_number(cc_text, allow_decimal=False)
+    # CC (Cubic Capacity) - Enhanced with specific patterns
+    cc_patterns = [
+        r"CUBIC\s+CAPACITY\s*[:=\-]?\s*(\d{3,5})\s*(?:CC|ML|L)?",
+        r"CC\s*[:=\-]?\s*(\d{3,5})\b",
+        r"(\d{3,5})\s*CC\b",
+    ]
+    for pattern in cc_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            cc_val = match.group(1).strip()
+            # Validate reasonable CC range (100-10000)
+            try:
+                cc_num = int(cc_val)
+                if 100 <= cc_num <= 10000:
+                    result["CC"] = cc_val
+                    break
+            except (ValueError, TypeError):
+                continue
     
-    # GVW (Gross Vehicle Weight) - Enhanced
-    gvw_text = find_field_by_keywords(
-        text,
-        ["GVW", "Gross Vehicle Weight", "GVW:", "Vehicle Weight", "Gross Weight"]
-    )
-    result["GVW"] = extract_number(gvw_text)
+    if not result["CC"]:
+        cc_text = find_field_by_keywords(
+            text,
+            ["CC", "Cubic Capacity", "Engine CC", "CC:", "Cubic Capacity (CC)"],
+            value_pattern=r"\d{3,5}"
+        )
+        result["CC"] = extract_number(cc_text, allow_decimal=False)
+        # Validate the extracted number
+        if result["CC"]:
+            try:
+                cc_num = int(result["CC"])
+                if not (100 <= cc_num <= 10000):
+                    result["CC"] = ""  # Invalid range
+            except (ValueError, TypeError):
+                result["CC"] = ""
+    
+    # GVW (Gross Vehicle Weight) - Enhanced with validation
+    gvw_patterns = [
+        r"GVW\s*[:=\-]?\s*(\d{3,7})\s*(?:KG|TONS?)?",
+        r"GROSS\s+VEHICLE\s+WEIGHT\s*[:=\-]?\s*(\d{3,7})\s*(?:KG|TONS?)?",
+    ]
+    for pattern in gvw_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            gvw_val = match.group(1).strip()
+            try:
+                gvw_num = int(gvw_val)
+                # Validate reasonable GVW range (500-50000 kg)
+                if 500 <= gvw_num <= 50000:
+                    result["GVW"] = gvw_val
+                    break
+            except (ValueError, TypeError):
+                continue
+    
+    if not result["GVW"]:
+        gvw_text = find_field_by_keywords(
+            text,
+            ["GVW", "Gross Vehicle Weight", "GVW:", "Vehicle Weight", "Gross Weight"],
+            value_pattern=r"\d{3,7}"
+        )
+        result["GVW"] = extract_number(gvw_text)
+        # Validate the extracted number
+        if result["GVW"]:
+            try:
+                gvw_num = int(result["GVW"])
+                if not (500 <= gvw_num <= 50000):
+                    result["GVW"] = ""  # Invalid range
+            except (ValueError, TypeError):
+                result["GVW"] = ""
     
     # Product Code
     result["PRODUCT_CODE"] = find_field_by_keywords(
@@ -673,11 +807,28 @@ def extract_insurance_fields(text: str) -> Dict[str, str]:
         ["Product Code", "Product", "Product ID", "Code", "Product Code:"]
     )
     
-    # Broker Name - Enhanced
-    result["BROKER_NAME"] = find_field_by_keywords(
-        text,
-        ["Broker", "Broker Name", "Agent", "Agent Name", "Intermediary", "Broker Code"]
-    )
+    # Broker Name - Enhanced with more specific patterns
+    broker_patterns = [
+        r"INTERMEDIARY\s+NAME\s*[:=\-]?\s*([A-Z\s&]{2,50}?)(?:\s*(?:\n|INTERMEDIARY|CODE|CONTACT|$))",
+        r"BROKER\s+NAME\s*[:=\-]?\s*([A-Z\s&]{2,50}?)(?:\s*(?:\n|BROKER|CODE|CONTACT|$))",
+        r"AGENT\s+NAME\s*[:=\-]?\s*([A-Z\s&]{2,50}?)(?:\s*(?:\n|AGENT|CODE|CONTACT|$))",
+    ]
+    for pattern in broker_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            broker_name = match.group(1).strip()
+            # Clean up - remove common suffixes
+            broker_name = re.sub(r'\s+(CODE|CONTACT|NO|NUMBER).*$', '', broker_name, flags=re.IGNORECASE)
+            if len(broker_name) > 2 and len(broker_name) < 100:
+                result["BROKER_NAME"] = broker_name.strip()
+                break
+    
+    if not result["BROKER_NAME"]:
+        result["BROKER_NAME"] = find_field_by_keywords(
+            text,
+            ["Broker Name", "Agent Name", "Intermediary Name"],
+            value_pattern=r"[A-Z\s&]{2,50}"
+        )
     
     # Financier Name - Enhanced
     result["FINANCIER_NAME"] = find_field_by_keywords(
